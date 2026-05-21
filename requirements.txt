@@ -1,0 +1,7 @@
+numpy>=1.26
+scipy>=1.13
+matplotlib>=3.9
+networkx>=3.3
+tqdm>=4.66
+jupyter>=1.1
+ipykernel>=6.29
