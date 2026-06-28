@@ -138,6 +138,25 @@ class BiddingEnvironment(ABC):
         }
         return float(utilities.sum()), float(costs.sum()), info
 
+    def round(self, bids: NDArray[np.float64]) -> dict[str, Any]:
+        """Runner-protocol wrapper around step().
+
+        Parameters
+        ----------
+        bids : (N,) array — submitted bids for each campaign
+
+        Returns
+        -------
+        dict with keys: "reward", "cost", "competing_bids", "won",
+                        "utilities", "costs", "t"
+        """
+        total_utility, total_cost, info = self.step(bids)
+        return {
+            "reward": total_utility,
+            "cost": total_cost,
+            **info,
+        }
+
     # ------------------------------------------------------------------
     # To implement in subclasses
     # ------------------------------------------------------------------
