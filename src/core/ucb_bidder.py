@@ -133,10 +133,11 @@ class UCBLikeBidderAgent:
         if self._t < self.K:
             self._arm = self._t
         else:
-            width = self.value * np.sqrt(2.0 * np.log(self.T) / self.n_pulls)
-            f_ucb = self.avg_f + width
-            c_lcb = np.maximum(self.avg_c - width, 0.0)
-            gamma = self._solve_lp(f_ucb, c_lcb)
+            log_t = np.log(self.T)
+            f_ucb = self.avg_f + self.value * np.sqrt(2.0 * log_t / self.n_pulls)
+            c_lcb = np.maximum(self.avg_c - self.bid_grid * np.sqrt(2.0 * log_t / self.n_pulls), 0.0)
+            rho_t = self._budget / max(self.T - self._t, 1)
+            gamma = self._solve_lp(f_ucb, c_lcb, rho_t)
             self._arm = int(self._rng.choice(self.K, p=gamma))
         return np.array([self.bid_grid[self._arm]])
 
@@ -144,11 +145,12 @@ class UCBLikeBidderAgent:
         self,
         f_ucb: NDArray[np.float64],
         c_lcb: NDArray[np.float64],
+        rho: float,
     ) -> NDArray[np.float64]:
         res = optimize.linprog(
             -f_ucb,
             A_ub=[c_lcb],
-            b_ub=[self.rho],
+            b_ub=[rho],
             A_eq=[np.ones(self.K)],
             b_eq=[1.0],
             bounds=(0.0, 1.0),
