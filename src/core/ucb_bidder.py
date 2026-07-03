@@ -72,15 +72,28 @@ class UCB1BidderAgent:
 class UCBLikeBidderAgent:
     """Phase 1B: UCB on utility + LCB on cost, LP mixed strategy, budget-aware.
 
-    Each round computes:
+    Each round computes, for arms tried at least once:
         f_UCB(b) = avg_f(b) + v * sqrt(2 log T / N(b))
         c_LCB(b) = max(avg_c(b) - v * sqrt(2 log T / N(b)), 0)
+    Untried arms are seeded optimistically instead of forced round-robin:
+    f_UCB(b) = v (the max possible reward) and c_LCB(b) = 0, so the LP is
+    naturally drawn to explore them without a separate warm-up phase.
 
-    Then solves:
+    Then solves, restricted to arms whose bid does not exceed the currently
+    remaining budget (a hard cap, independent of the LP's own soft
+    expected-cost constraint below):
         max_{gamma in Delta(B)} sum_b gamma(b) * f_UCB(b)
-        s.t. sum_b gamma(b) * c_LCB(b) <= rho
+        s.t. sum_b gamma(b) * c_LCB(b) <= rho_t
 
-    and samples a bid from gamma. Stops bidding (bid = 0) when budget exhausted.
+    and samples a bid from gamma. Stops bidding (bid = 0) when budget
+    exhausted.
+
+    The hard per-arm affordability cap is what guarantees the budget can
+    never be violated: the LP's own constraint only bounds *expected* cost
+    via the (optimistic, underestimating) c_LCB, so without the cap a single
+    unlucky draw of an expensive-but-undersampled arm could win and cost
+    more than what's left. Restricting the arm set to bid <= budget_remaining
+    makes that impossible regardless of estimation error.
 
     Parameters
     ----------
@@ -130,15 +143,30 @@ class UCBLikeBidderAgent:
         if self._budget <= 0.0:
             self._arm = 0
             return np.array([self.bid_grid[0]])
-        if self._t < self.K:
-            self._arm = self._t
-        else:
-            log_t = np.log(self.T)
-            f_ucb = self.avg_f + self.value * np.sqrt(2.0 * log_t / self.n_pulls)
-            c_lcb = np.maximum(self.avg_c - self.bid_grid * np.sqrt(2.0 * log_t / self.n_pulls), 0.0)
-            rho_t = self._budget / max(self.T - self._t, 1)
-            gamma = self._solve_lp(f_ucb, c_lcb, rho_t)
-            self._arm = int(self._rng.choice(self.K, p=gamma))
+
+        rho_t = self._budget / max(self.T - self._t, 1)
+
+        # Hard cap: only arms whose bid cannot exceed the remaining budget are
+        # eligible, regardless of what the LP's soft cost constraint allows.
+        # bid_grid[0] == 0 is always in here since self._budget > 0 here.
+        idx = np.flatnonzero(self.bid_grid <= self._budget)
+
+        log_t = np.log(self.T)
+        n_pulls = self.n_pulls[idx]
+        tried = n_pulls > 0
+        width = np.zeros(len(idx))
+        width[tried] = np.sqrt(2.0 * log_t / n_pulls[tried])
+
+        f_ucb = np.where(tried, self.avg_f[idx] + self.value * width, self.value)
+        c_lcb = np.where(
+            tried,
+            np.maximum(self.avg_c[idx] - self.bid_grid[idx] * width, 0.0),
+            0.0,
+        )
+
+        gamma = np.zeros(self.K)
+        gamma[idx] = self._solve_lp(f_ucb, c_lcb, rho_t)
+        self._arm = int(self._rng.choice(self.K, p=gamma))
         return np.array([self.bid_grid[self._arm]])
 
     def _solve_lp(
@@ -147,23 +175,24 @@ class UCBLikeBidderAgent:
         c_lcb: NDArray[np.float64],
         rho: float,
     ) -> NDArray[np.float64]:
+        n = len(f_ucb)
         res = optimize.linprog(
             -f_ucb,
             A_ub=[c_lcb],
             b_ub=[rho],
-            A_eq=[np.ones(self.K)],
+            A_eq=[np.ones(n)],
             b_eq=[1.0],
             bounds=(0.0, 1.0),
             method="highs",
         )
         if not res.success:
-            gamma = np.zeros(self.K)
+            gamma = np.zeros(n)
             gamma[int(np.argmax(f_ucb))] = 1.0
             return gamma
         gamma = np.maximum(res.x, 0.0)
         total = gamma.sum()
         if total < 1e-12:
-            gamma = np.zeros(self.K)
+            gamma = np.zeros(n)
             gamma[0] = 1.0
             return gamma
         return gamma / total
