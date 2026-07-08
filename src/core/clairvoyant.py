@@ -13,6 +13,11 @@ Phase 2 (multi-campaign):
     shared budget and conflict-graph IS constraint.
     Exact (LP) for N <= 6; document fallback for larger N.
 
+Phase 3 (adversarial / non-stationary):
+  empirical_win_probs: win rates measured on a realized competing-bid sequence.
+  best_fixed_in_hindsight: best fixed feasible mixed strategy in hindsight —
+    the adversarial baseline; same LP as Phase 2 fed with empirical win rates.
+
 Win probability helpers: analytical formulas for Beta(n, 1) competing bids.
 """
 
@@ -242,3 +247,64 @@ def clairvoyant_multi_campaign(
                 )
 
     return best_gamma, float(best_reward), float(best_cost)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 helpers — adversarial / non-stationary baseline
+# ---------------------------------------------------------------------------
+
+def empirical_win_probs(
+    bid_grid: NDArray,
+    m_sequence: NDArray,
+) -> NDArray[np.float64]:
+    """Empirical win rates of each bid on a realized competing-bid sequence.
+
+    Parameters
+    ----------
+    bid_grid : (K,) array
+    m_sequence : (T, N) array — realized highest competing bids m_{i,t}
+
+    Returns
+    -------
+    win_rates : (N, K) array — fraction of rounds with bid_grid[k] >= m_{i,t}
+    """
+    bid_grid = np.asarray(bid_grid, dtype=float)
+    m_sequence = np.asarray(m_sequence, dtype=float)
+    # (T, N, K) broadcast, averaged over rounds
+    return (bid_grid[None, None, :] >= m_sequence[:, :, None]).mean(axis=0)
+
+
+def best_fixed_in_hindsight(
+    bid_grid: NDArray,
+    values: NDArray,
+    rho: float,
+    m_sequence: NDArray,
+    conflict_graph: ConflictGraph,
+) -> tuple[dict[int, NDArray], float, float]:
+    """Best fixed feasible mixed strategy in hindsight (adversarial baseline).
+
+    On a realized sequence, the per-(campaign, bid) average utility and cost
+    are exactly (v_i - b_k) * win_rate and b_k * win_rate, so the hindsight
+    optimum is the Phase 2 LP evaluated at the empirical win rates. This is
+    the comparator against which no-regret adversarial learners are measured;
+    the stronger per-round best policy is unattainable under fast
+    non-stationarity.
+
+    Parameters
+    ----------
+    bid_grid  : (K,) array
+    values    : (N,) array   — per-campaign private values v_i
+    rho       : float        — per-round budget = B_total / T
+    m_sequence : (T, N) array — realized highest competing bids
+    conflict_graph : ConflictGraph
+
+    Returns
+    -------
+    best_gamma : dict[int, NDArray]  — per-campaign bid distributions for best IS
+    per_round_reward : float
+    per_round_cost   : float
+    """
+    win_rates = empirical_win_probs(bid_grid, m_sequence)
+    return clairvoyant_multi_campaign(
+        bid_grid, values, rho, win_rates, conflict_graph
+    )
