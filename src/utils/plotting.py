@@ -169,9 +169,16 @@ def save_figure(fig: Figure, path: str, dpi: int = 150) -> None:
     ----------
     fig : Figure
     path : str
-        e.g. "report/figures/req1_regret.png"
+        Relative path from repo root, e.g. "report/figures/req1_regret.png"
     dpi : int
     """
+    from pathlib import Path
+    p = Path(path)
+    if not p.is_absolute():
+        # Resolve relative to repo root (two levels above src/utils/plotting.py)
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        p = repo_root / p
+    p.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
-    fig.savefig(path, dpi=dpi, bbox_inches="tight")
-    print(f"Saved → {path}")
+    fig.savefig(str(p), dpi=dpi, bbox_inches="tight")
+    print(f"Saved → {p}")

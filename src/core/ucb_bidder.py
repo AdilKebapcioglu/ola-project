@@ -73,11 +73,23 @@ class UCBLikeBidderAgent:
     """Phase 1B: UCB on utility + LCB on cost, LP mixed strategy, budget-aware.
 
     Each round computes, for arms tried at least once:
-        f_UCB(b) = avg_f(b) + v * sqrt(2 log T / N(b))
-        c_LCB(b) = max(avg_c(b) - v * sqrt(2 log T / N(b)), 0)
+        f_UCB(b) = avg_f(b) + max(v-b, 0) * sqrt(2 log T / N(b))
+        c_LCB(b) = max(avg_c(b) - b * sqrt(2 log T / N(b)), 0)
     Untried arms are seeded optimistically instead of forced round-robin:
-    f_UCB(b) = v (the max possible reward) and c_LCB(b) = 0, so the LP is
-    naturally drawn to explore them without a separate warm-up phase.
+    f_UCB(b) = max(v-b, 0) (the max possible profit for that bid) and
+    c_LCB(b) = 0.5 * b (assume a neutral 50% win rate), so the LP is
+    naturally drawn to explore them without a separate warm-up phase, and
+    without assuming they are free (which caused the budget to be spent
+    almost entirely in the first few percent of the horizon, since every
+    untried bid looked costless until it happened to be pulled).
+
+    The confidence width is scaled by max(v-b, 0) — the true best-case
+    profit for that specific bid — not by the flat value v. Scaling by v
+    everywhere meant a single lucky win on an expensive, barely-tried bid
+    produced a wildly inflated f_UCB (since even one pull gives a large
+    bonus, and that bonus was multiplied by the full v regardless of how
+    little that bid could ever actually pay out), causing the LP to dump
+    most of the budget into that one arm for many consecutive rounds.
 
     Then solves, restricted to arms whose bid does not exceed the currently
     remaining budget (a hard cap, independent of the LP's own soft
@@ -94,6 +106,14 @@ class UCBLikeBidderAgent:
     unlucky draw of an expensive-but-undersampled arm could win and cost
     more than what's left. Restricting the arm set to bid <= budget_remaining
     makes that impossible regardless of estimation error.
+
+    A second guard, the pacing ceiling, forces bid = 0 whenever cumulative
+    spend has gotten more than one max-bid ahead of the smooth target line
+    rho * t. This exists because bids are lumpy (cost is 0 or the full bid,
+    never a smooth trickle): a single early win on an expensive bid can put
+    the agent far ahead of schedule, after which rho_t collapses and starves
+    it for most of the remaining horizon. The ceiling spreads spend evenly
+    over time instead of letting it arrive in one early burst.
 
     Parameters
     ----------
@@ -146,10 +166,27 @@ class UCBLikeBidderAgent:
 
         rho_t = self._budget / max(self.T - self._t, 1)
 
+        # Pacing ceiling: don't let realised spend get too far ahead of the
+        # smooth target line rho * t. Without this, a lucky early win on an
+        # expensive bid (a single lump of cost, not a smooth trickle) can put
+        # the agent way ahead of schedule; the recalculated rho_t then starves
+        # it for most of the remaining horizon to compensate, which is what
+        # produced front-loaded spending and a long stretch of negative
+        # regret. Capping how far ahead it's allowed to get keeps spend paced
+        # evenly instead of bursty. Slack of one max-bid's worth avoids
+        # penalising the first lucky win itself, only repeats of it.
+        spent_so_far = self._budget_total - self._budget
+        pace_line = self.rho * self._t
+        ahead_of_pace = spent_so_far - pace_line
+        slack = self.bid_grid.max()
+
         # Hard cap: only arms whose bid cannot exceed the remaining budget are
         # eligible, regardless of what the LP's soft cost constraint allows.
         # bid_grid[0] == 0 is always in here since self._budget > 0 here.
-        idx = np.flatnonzero(self.bid_grid <= self._budget)
+        if ahead_of_pace > slack:
+            idx = np.array([0])
+        else:
+            idx = np.flatnonzero(self.bid_grid <= self._budget)
 
         log_t = np.log(self.T)
         n_pulls = self.n_pulls[idx]
@@ -157,11 +194,16 @@ class UCBLikeBidderAgent:
         width = np.zeros(len(idx))
         width[tried] = np.sqrt(2.0 * log_t / n_pulls[tried])
 
-        f_ucb = np.where(tried, self.avg_f[idx] + self.value * width, self.value)
+        # Reward for bid b lies in [0, max(v-b, 0)] (profit if won, 0 if lost) —
+        # scale the confidence bonus by that per-bid range, not the flat value
+        # v, so one lucky early win on an expensive bid can't look better than
+        # that bid could ever actually pay off.
+        reward_range = np.maximum(self.value - self.bid_grid[idx], 0.0)
+        f_ucb = np.where(tried, self.avg_f[idx] + reward_range * width, reward_range)
         c_lcb = np.where(
             tried,
             np.maximum(self.avg_c[idx] - self.bid_grid[idx] * width, 0.0),
-            0.0,
+            0.5 * self.bid_grid[idx],
         )
 
         gamma = np.zeros(self.K)
