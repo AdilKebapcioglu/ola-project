@@ -71,9 +71,21 @@ class PrimalDualBidderAgent:
     rng : np.random.Generator, optional
         RNG for sampling bids from the Hedge distributions.
     hedge_eta : float, optional
-        Primal (Hedge) learning rate; defaults to sqrt(log K / T).
+        Primal (Hedge) learning rate; defaults to sqrt(log K / T). Any fixed
+        multiple of the default keeps the O(sqrt(T)) Hedge guarantee (with a
+        proportionally larger constant); empirically larger values sharpen
+        the bid distributions substantially on this problem.
     ogd_eta : float, optional
         Dual (OGD) step size; defaults to 1 / sqrt(T).
+    lmbd_init : float, default 1.0
+        Initial dual variable. The course formulation starts at 1
+        (maximally cautious); starting at 0 avoids an early under-bidding
+        phase whose spend deficit fixed-rho pacing can never recover.
+    adaptive_rho : bool, default False
+        If True, the dual gradient targets rho_t = remaining_budget /
+        remaining_rounds instead of the fixed rho, so a spend deficit
+        raises the target and pushes lambda down (catch-up pacing).
+        The lambda projection ceiling stays at 1/rho.
     """
 
     def __init__(
@@ -86,6 +98,8 @@ class PrimalDualBidderAgent:
         rng: np.random.Generator | None = None,
         hedge_eta: float | None = None,
         ogd_eta: float | None = None,
+        lmbd_init: float = 1.0,
+        adaptive_rho: bool = False,
     ) -> None:
         self.bid_grid = np.asarray(bid_grid, dtype=float)
         self.values = np.asarray(values, dtype=float)
@@ -100,6 +114,8 @@ class PrimalDualBidderAgent:
 
         self.hedge_eta = hedge_eta if hedge_eta is not None else np.sqrt(np.log(self.K) / T)
         self.ogd_eta = ogd_eta if ogd_eta is not None else 1.0 / np.sqrt(T)
+        self._lmbd_init = float(lmbd_init)
+        self._adaptive_rho = bool(adaptive_rho)
 
         # Worst-case cost of a single round: every campaign in the largest
         # feasible independent set wins at the maximum bid.
@@ -120,7 +136,7 @@ class PrimalDualBidderAgent:
         self.cum_f = np.zeros((self.N, self.K))     # raw utilities
         self.cum_c = np.zeros((self.N, self.K))     # raw costs
 
-        self.lmbd = 1.0
+        self.lmbd = self._lmbd_init
         self._budget = self._budget_total
         self._t = 0
         self._x_t = np.full((self.N, self.K), 1.0 / self.K)
@@ -134,7 +150,7 @@ class PrimalDualBidderAgent:
         self.cum_loss = np.zeros((self.N, self.K))
         self.cum_f = np.zeros((self.N, self.K))
         self.cum_c = np.zeros((self.N, self.K))
-        self.lmbd = 1.0
+        self.lmbd = self._lmbd_init
         self._budget = self._budget_total
         self._t = 0
         self._x_t = np.full((self.N, self.K), 1.0 / self.K)
@@ -198,10 +214,15 @@ class PrimalDualBidderAgent:
         self.cum_c += c_mat
 
         # Dual: OGD on the budget constraint, expected cost under the played
-        # distributions (campaigns outside the selected set bid 0).
+        # distributions (campaigns outside the selected set bid 0). With
+        # adaptive_rho the target is the remaining per-round allowance, so a
+        # spend deficit raises it and lambda is pushed down to catch up.
         exp_cost = sum(float(self._x_t[i] @ c_mat[i]) for i in self._selected)
+        rho_target = (
+            self._budget / max(self.T - self._t, 1) if self._adaptive_rho else self.rho
+        )
         self.lmbd = float(
-            np.clip(self.lmbd - self.ogd_eta * (self.rho - exp_cost), 0.0, self.lmbd_max)
+            np.clip(self.lmbd - self.ogd_eta * (rho_target - exp_cost), 0.0, self.lmbd_max)
         )
 
         self._budget -= float(feedback["cost"])
