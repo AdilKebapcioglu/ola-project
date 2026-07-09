@@ -250,6 +250,64 @@ def clairvoyant_multi_campaign(
 
 
 # ---------------------------------------------------------------------------
+# Phase 4 helper — piecewise-stationary (per-interval) clairvoyant
+# ---------------------------------------------------------------------------
+
+def clairvoyant_piecewise(
+    bid_grid: NDArray,
+    values: NDArray,
+    rho: float,
+    k_matrix: NDArray,
+    boundaries: NDArray,
+    conflict_graph: ConflictGraph,
+) -> tuple[NDArray[np.float64], list[dict]]:
+    """Per-interval LP clairvoyant for a piecewise-stationary environment.
+
+    Solves the Phase 2 LP (`clairvoyant_multi_campaign`) once per interval
+    with that interval's true win probabilities, and expands the optimal
+    per-round rewards into a (T,) sequence — the dynamic ("best policy in
+    hindsight") benchmark of course notebook 10, here restricted to uniform
+    pacing: every interval faces the same per-round budget rho, i.e. the
+    comparator may not shift budget between intervals. This matches the
+    constraint the agents face and keeps each interval's LP independent.
+
+    Parameters
+    ----------
+    bid_grid  : (K,) array
+    values    : (N,) array   — per-campaign private values v_i
+    rho       : float        — per-round budget = B_total / T
+    k_matrix  : (n_intervals, N) array — Beta parameter per (interval, campaign)
+    boundaries : (n_intervals + 1,) int array — interval edges
+    conflict_graph : ConflictGraph
+
+    Returns
+    -------
+    reward_seq : (T,) array — expected per-round clairvoyant reward
+    interval_info : list of dicts, one per interval, with keys
+        "reward", "cost", "campaigns" (sorted best-IS members), "gamma"
+    """
+    boundaries = np.asarray(boundaries, dtype=int)
+    k_matrix = np.asarray(k_matrix, dtype=float)
+    T = int(boundaries[-1])
+
+    reward_seq = np.zeros(T)
+    interval_info: list[dict] = []
+    for j in range(len(boundaries) - 1):
+        win_probs_j = win_probs_multi_campaign(bid_grid, k_matrix[j].astype(int))
+        gamma_j, reward_j, cost_j = clairvoyant_multi_campaign(
+            bid_grid, values, rho, win_probs_j, conflict_graph
+        )
+        reward_seq[boundaries[j] : boundaries[j + 1]] = reward_j
+        interval_info.append({
+            "reward": reward_j,
+            "cost": cost_j,
+            "campaigns": sorted(gamma_j.keys()),
+            "gamma": gamma_j,
+        })
+    return reward_seq, interval_info
+
+
+# ---------------------------------------------------------------------------
 # Phase 3 helpers — adversarial / non-stationary baseline
 # ---------------------------------------------------------------------------
 

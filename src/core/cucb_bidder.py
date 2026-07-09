@@ -84,6 +84,10 @@ class CombUCBLikeBidderAgent:
         self._budget_total = float(budget)
         self.rho = budget / T
         self._rng = rng or np.random.default_rng()
+        # Log-horizon used in the UCB confidence widths. Subclasses with a
+        # shorter effective memory (e.g. sliding window) override this with
+        # the log of their window size (notebook 10: log W, not log T).
+        self._log_horizon = np.log(T)
 
         # All feasible independent sets, precomputed once at init.
         # Sorted largest-first by ConflictGraph.all_independent_sets().
@@ -241,11 +245,11 @@ class CombUCBLikeBidderAgent:
         reward_range = np.where(
             self.bid_grid[None, :] == 0.0, 0.0, reward_range
         )
-        width = reward_range * np.sqrt(2.0 * np.log(self.T) / safe_n)
+        width = reward_range * np.sqrt(2.0 * self._log_horizon / safe_n)
 
         f_ucb = np.where(
             mask_unexp,
-            reward_range * np.sqrt(2.0 * np.log(self.T)),
+            reward_range * np.sqrt(2.0 * self._log_horizon),
             self.avg_f + width,
         )
         # Laplace-smoothed cost: (n * avg_c + 0.5 * bid) / (n + 1)

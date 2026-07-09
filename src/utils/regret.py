@@ -30,19 +30,21 @@ import numpy as np
 
 def cumulative_regret(
     rewards: np.ndarray,
-    clairvoyant_reward: float,
+    clairvoyant_reward: float | np.ndarray,
 ) -> np.ndarray:
     """
     Compute cumulative pseudo-regret for a single trial.
 
-    Regret_t = t * clairvoyant_reward - sum_{s=1}^{t} reward_s
+    Regret_t = sum_{s=1}^{t} clairvoyant_reward_s - sum_{s=1}^{t} reward_s
 
     Parameters
     ----------
     rewards : np.ndarray, shape (T,)
         Per-round realised rewards from the algorithm.
-    clairvoyant_reward : float
-        Expected per-round reward of the clairvoyant benchmark.
+    clairvoyant_reward : float or np.ndarray of shape (T,)
+        Expected per-round reward of the clairvoyant benchmark. A scalar for
+        stationary benchmarks; a (T,) array for dynamic benchmarks (e.g. the
+        per-interval clairvoyant of a piecewise-stationary environment).
 
     Returns
     -------
@@ -51,7 +53,15 @@ def cumulative_regret(
     """
     rewards = np.asarray(rewards, dtype=float)
     T = len(rewards)
-    clairvoyant_cumulative = clairvoyant_reward * np.arange(1, T + 1)
+    clairvoyant_reward = np.asarray(clairvoyant_reward, dtype=float)
+    if clairvoyant_reward.ndim == 0:
+        clairvoyant_cumulative = float(clairvoyant_reward) * np.arange(1, T + 1)
+    else:
+        assert clairvoyant_reward.shape == (T,), (
+            f"clairvoyant_reward must be scalar or shape ({T},), "
+            f"got {clairvoyant_reward.shape}"
+        )
+        clairvoyant_cumulative = np.cumsum(clairvoyant_reward)
     return clairvoyant_cumulative - np.cumsum(rewards)
 
 

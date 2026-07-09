@@ -110,3 +110,92 @@ class NonStationaryMultiCampaignEnv(BiddingEnvironment):
 
     def _sample_competing_bids(self) -> NDArray[np.float64]:
         return self.m_seq[min(self._t, self.T - 1)]
+
+
+class SlightlyNonStationaryMultiCampaignEnv(BiddingEnvironment):
+    """Piecewise-stationary multi-campaign environment for Phase 4.
+
+    The horizon is partitioned into `n_intervals` equal intervals. Within
+    interval j, campaign i's competing bid is drawn i.i.d. from
+    Beta(k_matrix[j, i], 1); each interval has a different parameter vector.
+    This is the "slightly non-stationary" regime: a handful of persistent
+    regime shifts (Upsilon_T = n_intervals - 1 change points), in contrast
+    to the ~hundreds of fast changes of NonStationaryMultiCampaignEnv.
+
+    The interval STRUCTURE (boundaries and k_matrix) is generated once at
+    construction from `sequence_seed` and shared by every trial, but the
+    competing bids themselves are RESAMPLED per trial from the trial rng
+    (course notebook 10 protocol for piecewise-stationary stochastic
+    environments). Pseudo-regret is therefore well defined against the
+    expected-value per-interval clairvoyant (`clairvoyant_piecewise`).
+
+    Consecutive intervals are guaranteed to differ in every campaign's
+    parameter (redrawn on collision), so each boundary is a genuine change
+    point for every campaign.
+
+    Parameters
+    ----------
+    values : (N,) array
+        Per-campaign private values v_i (fixed over time).
+    T : int
+        Horizon.
+    sequence_seed : int
+        Seed for the interval structure. Same seed => identical k_matrix and
+        boundaries, so baselines are computed once and trials are comparable.
+    n_intervals : int, default 5
+        Number of stationary intervals (equal length, last one absorbs the
+        remainder of T).
+    k_levels : tuple[int, int], default (1, 6)
+        Inclusive integer range from which each k_matrix entry is drawn
+        (number of Uniform(0,1) competitors; higher = stiffer competition).
+
+    Attributes
+    ----------
+    k_matrix : (n_intervals, N) array
+        Beta parameter of each (interval, campaign) pair.
+    boundaries : (n_intervals + 1,) array of int
+        Interval edges; interval j covers rounds [boundaries[j], boundaries[j+1]).
+    k_seq : (T, N) array
+        Per-round Beta parameters (k_matrix expanded along the horizon).
+    """
+
+    def __init__(
+        self,
+        values: NDArray[np.float64],
+        T: int,
+        sequence_seed: int,
+        n_intervals: int = 5,
+        k_levels: tuple[int, int] = (1, 6),
+    ) -> None:
+        gen_rng = np.random.default_rng(sequence_seed)
+        super().__init__(values=np.asarray(values, dtype=float), T=T, rng=gen_rng)
+
+        self.n_intervals = int(n_intervals)
+        self.boundaries: NDArray[np.int_] = np.linspace(
+            0, T, self.n_intervals + 1, dtype=int
+        )
+
+        k_matrix = np.zeros((self.n_intervals, self.N))
+        for j in range(self.n_intervals):
+            for i in range(self.N):
+                k = int(gen_rng.integers(k_levels[0], k_levels[1] + 1))
+                # Every boundary must be a real change point for campaign i
+                while j > 0 and k == k_matrix[j - 1, i]:
+                    k = int(gen_rng.integers(k_levels[0], k_levels[1] + 1))
+                k_matrix[j, i] = k
+        self.k_matrix: NDArray[np.float64] = k_matrix
+
+        self.k_seq: NDArray[np.float64] = np.repeat(
+            k_matrix,
+            np.diff(self.boundaries),
+            axis=0,
+        )  # (T, N)
+
+    def reset(self, rng: np.random.Generator) -> None:
+        """Store the trial rng; competing bids are resampled per trial."""
+        self.rng = rng
+        self._t = 0
+
+    def _sample_competing_bids(self) -> NDArray[np.float64]:
+        k_row = self.k_seq[min(self._t, self.T - 1)]
+        return self.rng.beta(k_row, np.ones(self.N))
