@@ -31,3 +31,5 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+.pytest_cache
