@@ -159,8 +159,16 @@ class CDCombUCBLikeBidderAgent(CombUCBLikeBidderAgent):
     rates of its arms. Per-arm Bernoulli CUSUM (notebook 10 pattern):
 
         first M post-reset samples of arm (i, k)  ->  baseline u_0
-        then   g+ = max(0, g+ + (w - u_0)),  g- = max(0, g- + (u_0 - w))
+        then   g+ = max(0, g+ + (w - u_0 - eps)),  g- = max(0, g- + (u_0 - w - eps))
         change detected when max(g+, g-) >= h
+
+    The drift slack `eps` follows the original CUSUM-UCB paper (Liu et al.
+    2018, Algorithm 2; notebook 10's simplified version omits it): only
+    deviations beyond eps accumulate, so the detector targets changes of
+    magnitude > eps. Without it, any estimation error e in the M-sample
+    baseline u_0 makes one statistic drift at rate e per sample and cross h
+    eventually — a guaranteed slow-motion false alarm on every heavily
+    played arm. With eps = 0 the notebook 10 behaviour is recovered.
 
     Reset scope — whole campaign row: all K bids of campaign i share the
     same m_i, so a change detected at any (i, k) invalidates every (i, .)
@@ -198,6 +206,10 @@ class CDCombUCBLikeBidderAgent(CombUCBLikeBidderAgent):
     alpha : float
         Probability of the extra uniform exploration round. Notebook 10
         default: sqrt(Upsilon_T * log(T / Upsilon_T) / T).
+    eps : float, default 0.0
+        CUSUM drift slack: deviations from u_0 must exceed eps to accumulate.
+        0 reproduces notebook 10; the CUSUM-UCB paper requires changes of
+        magnitude > 2*eps to be detectable.
     rng : np.random.Generator, optional
         RNG for LP sampling and alpha-exploration.
     force_init : bool, default False
@@ -221,6 +233,7 @@ class CDCombUCBLikeBidderAgent(CombUCBLikeBidderAgent):
         M: int,
         h: float,
         alpha: float,
+        eps: float = 0.0,
         rng: np.random.Generator | None = None,
         force_init: bool = False,
     ) -> None:
@@ -238,6 +251,7 @@ class CDCombUCBLikeBidderAgent(CombUCBLikeBidderAgent):
         self.M = int(M)
         self.h = float(h)
         self.alpha = float(alpha)
+        self.eps = float(eps)
 
         # Per-arm CUSUM state
         self._cd_n = np.zeros((self.N, self.K))      # post-reset sample count
@@ -298,8 +312,8 @@ class CDCombUCBLikeBidderAgent(CombUCBLikeBidderAgent):
             else:
                 # Active detection
                 u0 = self._cd_u0[i, k]
-                self._gp[i, k] = max(0.0, self._gp[i, k] + (w - u0))
-                self._gm[i, k] = max(0.0, self._gm[i, k] + (u0 - w))
+                self._gp[i, k] = max(0.0, self._gp[i, k] + (w - u0 - self.eps))
+                self._gm[i, k] = max(0.0, self._gm[i, k] + (u0 - w - self.eps))
                 self._cd_n[i, k] += 1
                 if max(self._gp[i, k], self._gm[i, k]) >= self.h:
                     to_reset.add(i)
